@@ -34,17 +34,6 @@ static int udp_client(const char *host, const char *serv, struct sockaddr **sapt
 	return(sockfd);
 }
 
-void pattern(char *ptr, int len)
-{
-    char c;
-    c = 0;
-    while(len-- > 0)  {
-        while(isprint((c & 0x7F)) == 0) 
-            c++;
-        *ptr++ = (c++ & 0x7F);
-    }
-}
-
 int main(int argc, char **argv)
 {
     struct sockaddr *srvaddr;
@@ -52,7 +41,8 @@ int main(int argc, char **argv)
     int sockfd, n, i;
     struct message_t sndmsg;
     int nrmsg, writelen;
-    int msgdata=0;
+    uint64_t msgdata=0;
+    char buf[sizeof(struct message_t)];
 
     if (argc < 4) {
         mylog_exit("usage: %s <host> <service or port> <# of messages> [msgdata]", argv[0]);
@@ -62,8 +52,11 @@ int main(int argc, char **argv)
     nrmsg = atoi(argv[3]);
     srand(time(NULL));
     sockfd = udp_client(argv[1], argv[2], &srvaddr, &addrlen);
+    setendian();
     
     writelen = sizeof(sndmsg);
+    sndmsg.size = writelen;
+    sndmsg.type = TWO;
     
     for(i=0; i < nrmsg; i++) {
         if (msgdata)
@@ -71,10 +64,13 @@ int main(int argc, char **argv)
         else
             sndmsg.data = rand() % 4 + 8;
         sndmsg.id = rand() % nrmsg;
+
+        msgserialize(&sndmsg);
         if ((n = sendto(sockfd, &sndmsg, writelen, 0, srvaddr, addrlen)) != writelen) {
             mylog_note("dgram #%d: write returned %d bytes, expexted %d", i, n, writelen);
         } else {
-            mylog_note("dgram #%d: wrote %d bytes", i, n);
+            msgdeserialize(&sndmsg);
+            printf("send msg| "); msgprint(&sndmsg);
         }
     }
 }
