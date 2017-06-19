@@ -77,8 +77,8 @@ struct srvinfo {
 struct msgqueue {
     struct message_t *queue;
     int size;
-    int basesize;
-    int idx;
+    int tail;
+    int head;
     pthread_cond_t cond;
     pthread_mutex_t mux;
 };
@@ -87,52 +87,44 @@ struct hash_table udpbag;
 struct msgqueue udpqueue;
 char *udphost, *tcphost, *udpservice, *tcpservice;
 
-void msgqueue_init(struct msgqueue *q, int basesize)
+void msgqueue_init(struct msgqueue *q, int size)
 {
-    q->queue = malloc(sizeof(struct message_t)*basesize);
-    q->size = basesize;
-    q->basesize = basesize;
-    q->idx = 0;
+    q->queue = malloc(sizeof(struct message_t)*size);
+    q->size = size;
+    q->tail = 0;
+    q->head = 0;
 }
 int msgqueue_empty(struct msgqueue *q)
 {
-    return q->idx == 0;
+    if (q->head == q->tail) {
+        q->head = q->tail = 0;
+        return 1;
+    }
+    return 0;
 }
 int msgqueue_push(struct msgqueue *q, struct message_t *msg)
 {
-    if(q->idx == q->size){
-        void *newq;
-        newq = realloc(q->queue, q->size*2*sizeof(*msg));
-        if (newq) {
-            q->queue = newq;
-            q->size = q->size*2;
-        } else {
-            perror("realloc oom");
-            mylog_note("discarding msg");
-        }
+    memcpy(&q->queue[q->head], msg, sizeof(*msg));
+    q->head = q->head + 1 % q->size;
+    if (q->head == q->tail) // queue is full
         return 0;
-    }
-    memcpy(&q->queue[q->idx], msg, sizeof(*msg));
-    q->idx++;
     return 1;
 }
 int msgqueue_pop(struct msgqueue *q, struct message_t *out)
 {
     if(msgqueue_empty(q))
         return 0;
-    q->idx--;
-    if (q->idx > q->basesize && q->idx == q->size/4){
-        q->queue = realloc(q->queue, q->size/2*sizeof(*out));
-        q->size = q->size/2;
-    }
-    memcpy(out, &q->queue[q->idx], sizeof(*out));
+    memcpy(out, &q->queue[q->tail], sizeof(*out));
+    q->tail = q->tail + 1 % q->size;
+    if (q->head == q->tail)
+        q->head = q->tail = 0;
     return 1;
 }
 int msgqueue_peek(struct msgqueue *q, struct message_t *out)
 {
     if(msgqueue_empty(q))
         return 0;
-    memcpy(out, &q->queue[q->idx-1], sizeof(*out));
+    memcpy(out, &q->queue[q->tail], sizeof(*out));
     return 1;
 }
 
@@ -193,6 +185,7 @@ static void *server_start(void *arg)
     struct message_t rcvmsg;
     socklen_t addrlen, len;
     struct srvinfo *srv = (struct srvinfo*)arg;
+    int isfullq = 0;
 
     sockfd = srv->sockfd;
     addrlen = srv->addrlen;
@@ -210,7 +203,14 @@ static void *server_start(void *arg)
         hashtbl_put(&udpbag, &rcvmsg);
         if (rcvmsg.data==10){
             pthread_mutex_lock(&udpqueue.mux);
-            msgqueue_push(&udpqueue, &rcvmsg);
+            if (isfullq && msgqueue_empty(&udpqueue)) {
+                mylog_note("msg queue is full, discarding msg...");
+                pthread_mutex_unlock(&udpqueue.mux);
+                continue;
+            } else
+                isfullq = 0;
+            if (!msgqueue_push(&udpqueue, &rcvmsg))
+                isfullq = 1;
             pthread_cond_signal(&udpqueue.cond);
             pthread_mutex_unlock(&udpqueue.mux);
         }
@@ -259,7 +259,7 @@ int main(int argc, char **argv)
 
     info.sockfd = udp_server(udphost, udpservice, &info.addrlen);
     hashtbl_init(&udpbag, BAGSIZE);
-    msgqueue_init(&udpqueue, QUEUEBASE);
+    msgqueue_init(&udpqueue, QUEUESIZE);
     signal(SIGINT, printbag_int);
     setendian();
     

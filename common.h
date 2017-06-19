@@ -16,7 +16,7 @@
 #include <byteswap.h>
 
 #define BAGSIZE 16
-#define QUEUEBASE 16
+#define QUEUESIZE 16
 #define SNDBUFSIZE 65536
 
 #define myperror(err) do { \
